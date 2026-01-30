@@ -256,6 +256,10 @@ def run_command(
     if missing:
         raise CommandError(f"missing values for placeholders: {missing}")
 
+    cd_param = _cd_placeholder_param(spec, param_map)
+    if cd_param is not None:
+        return CommandResult(stdout=f"{values[cd_param]}\n", stderr="", exit_code=0)
+
     if spec.limits.max_bytes is not None and spec.limits.size_param:
         size_value = values.get(spec.limits.size_param)
         if size_value is None:
@@ -266,6 +270,31 @@ def run_command(
 
     rendered = _render_command_tokens(spec.command, values)
     return _run_ssh(rendered, runner=runner)
+
+
+def _cd_placeholder_param(
+    spec: CommandSpec,
+    param_map: dict[str, CommandParam],
+) -> str | None:
+    """Return the path param name if the command is a virtual cd.
+
+    Args:
+        spec (CommandSpec): Command specification.
+        param_map (dict[str, CommandParam]): Parameters keyed by name.
+
+    Returns:
+        str | None: Path parameter name or None.
+    """
+    if len(spec.command) != 2 or spec.command[0] != "cd":
+        return None
+    placeholders = _collect_placeholders(spec.command)
+    if len(placeholders) != 1:
+        return None
+    param_name = next(iter(placeholders))
+    param = param_map.get(param_name)
+    if not param or param.param_type != "path":
+        return None
+    return param_name
 
 
 def _resolve_param_value(param: CommandParam, raw_value: Any) -> Any:

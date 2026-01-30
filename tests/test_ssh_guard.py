@@ -157,3 +157,35 @@ def test_run_command_enforces_size_limit() -> None:
             {"path": "/user/davide.mattioli/u20330/large.txt"},
             runner=runner,
         )
+
+
+def test_run_command_cd_returns_normalized_path() -> None:
+    """Return a validated path for cd commands.
+
+    This avoids an SSH call and only validates the path.
+    """
+    os.environ["SSH_AUTH_SOCK"] = "test"
+
+    def runner(cmd, **_kwargs):
+        """Fail the test if SSH is invoked.
+
+        Args:
+            cmd (list[str]): Command tokens.
+            **_kwargs: Unused keyword arguments.
+        """
+        raise AssertionError(f"unexpected SSH call: {cmd}")
+
+    spec = CommandSpec(
+        id="cluster_cd",
+        description="Change directory",
+        command=["cd", "{path}"],
+        params=[
+            CommandParam(name="path", param_type="path", required=True, allowed="all")
+        ],
+    )
+    result = ssh_guard.run_command(
+        spec,
+        {"path": "/user/davide.mattioli/u20330"},
+        runner=runner,
+    )
+    assert result.stdout.strip() == "/user/davide.mattioli/u20330"

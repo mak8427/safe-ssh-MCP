@@ -126,3 +126,13 @@ commands:
         value_map:
           run_main: /user/davide.mattioli/u20330/dinov3-LWF-Segmentation-erosion/jobs/run_main.sh
           run_split_eval: /user/davide.mattioli/u20330/dinov3-LWF-Segmentation-erosion/jobs/run_split_eval.sh
+  - id: cluster_cd
+    description: Validate and return a working directory path.
+    command:
+      - cd
+      - "{path}"
+    params:
+      path:
+        type: path
+        required: true
+        allowed: all

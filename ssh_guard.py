@@ -51,13 +51,20 @@ def _run_ssh(cmd: list[str]) -> CommandResult:
     for i, item in enumerate(cmd):
         _validate_token(item, f"arg[{i}]")
 
-    ssh_cmd = [
-        "ssh",
-        "-i",
-        config.SSH_KEY,
-        f"{config.SSH_USER}@{config.SSH_HOST}",
-        *cmd,
-    ]
+    ssh_cmd = ["ssh"]
+    if getattr(config, "SSH_BATCH_MODE", False):
+        ssh_cmd.extend(["-o", "BatchMode=yes"])
+    connect_timeout = getattr(config, "SSH_CONNECT_TIMEOUT", None)
+    if connect_timeout:
+        ssh_cmd.extend(["-o", f"ConnectTimeout={int(connect_timeout)}"])
+    ssh_cmd.extend(
+        [
+            "-i",
+            config.SSH_KEY,
+            f"{config.SSH_USER}@{config.SSH_HOST}",
+            *cmd,
+        ]
+    )
     completed = subprocess.run(
         ssh_cmd,
         capture_output=True,
@@ -155,7 +162,9 @@ def sbatch(job_id: str) -> CommandResult:
     """Submit a whitelisted sbatch script by id."""
     _validate_token(job_id, "job_id")
     script_path = config.SBATCH_SCRIPTS.get(job_id)
+
     if not script_path:
         raise CommandError("job_id is not in the allow-list")
+
     norm = _normalize_remote_path(script_path)
     return _run_ssh(["sbatch", norm])

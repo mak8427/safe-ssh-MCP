@@ -36,6 +36,11 @@ repos:
 
   - repo: local
     hooks:
+      - id: docstring-args
+        name: docstrings include args + description
+        entry: python scripts/check_docstrings.py --root .
+        language: system
+        pass_filenames: false
       - id: doctest-ratio
         name: doctest ratio (>= 80%)
         entry: python scripts/check_doctest_ratio.py --min 0.8

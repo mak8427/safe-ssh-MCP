@@ -1,0 +1,128 @@
+version: 1
+commands:
+  - id: cluster_squeue
+    description: Run squeue for the current user.
+    command:
+      - squeue
+      - --me
+  - id: cluster_sacct
+    description: Run sacct with a fixed safe flag set.
+    command:
+      - sacct
+      - -u
+      - "{ssh_user}"
+      - -X
+      - -n
+      - -P
+  - id: cluster_ls
+    description: List directory contents at path.
+    command:
+      - ls
+      - -la
+      - --
+      - "{path}"
+    params:
+      path:
+        type: path
+        required: true
+        allowed: all
+  - id: cluster_stat
+    description: Show stat info for a path.
+    command:
+      - stat
+      - --
+      - "{path}"
+    params:
+      path:
+        type: path
+        required: true
+        allowed: all
+  - id: cluster_head
+    description: Show the first N lines of a file.
+    command:
+      - head
+      - -n
+      - "{n}"
+      - --
+      - "{path}"
+    params:
+      path:
+        type: path
+        required: true
+        allowed: all
+      n:
+        type: int
+        required: false
+        default: 200
+        min: 1
+        max: 2000
+  - id: cluster_tail
+    description: Show the last N lines of a file.
+    command:
+      - tail
+      - -n
+      - "{n}"
+      - --
+      - "{path}"
+    params:
+      path:
+        type: path
+        required: true
+        allowed: all
+      n:
+        type: int
+        required: false
+        default: 200
+        min: 1
+        max: 2000
+  - id: cluster_cat
+    description: Cat a file with a size guard.
+    command:
+      - cat
+      - --
+      - "{path}"
+    params:
+      path:
+        type: path
+        required: true
+        allowed: all
+    limits:
+      max_bytes: 5242880
+      size_param: path
+  - id: cluster_grep
+    description: Search files or directories for a pattern.
+    command:
+      - grep
+      - -R
+      - -n
+      - -m
+      - "{max_grep_matches}"
+      - --binary-files=without-match
+      - --
+      - "{pattern}"
+      - "{path}"
+    params:
+      pattern:
+        type: string
+        required: true
+        max_length: 200
+      path:
+        type: path
+        required: true
+        allowed: all
+  - id: cluster_sbatch
+    description: Submit a whitelisted sbatch script by id.
+    command:
+      - sbatch
+      - "{job_id}"
+    params:
+      job_id:
+        type: path
+        required: true
+        allowed: all
+        allowed_values:
+          - run_main
+          - run_split_eval
+        value_map:
+          run_main: /user/davide.mattioli/u20330/dinov3-LWF-Segmentation-erosion/jobs/run_main.sh
+          run_split_eval: /user/davide.mattioli/u20330/dinov3-LWF-Segmentation-erosion/jobs/run_split_eval.sh

@@ -2,14 +2,30 @@
 
 from __future__ import annotations
 
+import inspect
+import logging
+from pathlib import Path
+
 from mcp.server.fastmcp import FastMCP
 
+import command_config
+import config
 import ssh_guard
 
 mcp = FastMCP("cluster-tools")
 
+LOGGER = logging.getLogger("cluster_tools")
+
 
 def _as_dict(result: ssh_guard.CommandResult) -> dict:
+    """Convert a CommandResult into a response dict.
+
+    Args:
+        result (ssh_guard.CommandResult): Command execution result.
+
+    Returns:
+        dict: Response payload.
+    """
     return {
         "stdout": result.stdout,
         "stderr": result.stderr,
@@ -17,58 +33,99 @@ def _as_dict(result: ssh_guard.CommandResult) -> dict:
     }
 
 
-@mcp.tool()
-def cluster_squeue() -> dict:
-    """Run squeue for the current user."""
-    return _as_dict(ssh_guard.squeue())
+def _safe_call(func, *args, **kwargs) -> dict:
+    """Invoke a function and normalize errors for the client.
+
+    Args:
+        func (callable): Function to call.
+        *args: Positional arguments.
+        **kwargs: Keyword arguments.
+
+    Returns:
+        dict: Response payload with stdout/stderr/exit_code.
+    """
+    try:
+        return _as_dict(func(*args, **kwargs))
+    except Exception as exc:  # pragma: no cover - returns error to client
+        LOGGER.error("tool error: %s", exc)
+        return {
+            "stdout": "",
+            "stderr": str(exc),
+            "exit_code": 1,
+            "error": str(exc),
+        }
 
 
-@mcp.tool()
-def cluster_sacct() -> dict:
-    """Run sacct for the current user."""
-    return _as_dict(ssh_guard.sacct())
+def _build_signature(spec: command_config.CommandSpec) -> inspect.Signature:
+    """Build a call signature for a command spec.
+
+    Args:
+        spec (command_config.CommandSpec): Command specification.
+
+    Returns:
+        inspect.Signature: Callable signature for MCP registration.
+    """
+    params = []
+    for param in spec.params:
+        if param.required and param.default is None:
+            default = inspect.Parameter.empty
+        elif param.default is None:
+            default = None
+        else:
+            default = param.default
+        annotation = int if param.param_type == "int" else str
+        params.append(
+            inspect.Parameter(
+                param.name,
+                inspect.Parameter.KEYWORD_ONLY,
+                default=default,
+                annotation=annotation,
+            )
+        )
+    return inspect.Signature(params)
 
 
-@mcp.tool()
-def cluster_ls(path: str) -> dict:
-    """List directory contents at path."""
-    return _as_dict(ssh_guard.ls(path))
+def _build_tool(spec: command_config.CommandSpec):
+    """Create a tool function for a command spec.
+
+    Args:
+        spec (command_config.CommandSpec): Command specification.
+
+    Returns:
+        callable: Tool function bound to the command spec.
+    """
+
+    def tool_func(**kwargs) -> dict:
+        """Execute the configured command with provided args.
+
+        Args:
+            **kwargs: Command arguments to pass through.
+
+        Returns:
+            dict: Command execution response.
+        """
+        return _safe_call(ssh_guard.run_command, spec, kwargs)
+
+    tool_func.__name__ = spec.id
+    tool_func.__doc__ = spec.description
+    setattr(tool_func, "__signature__", _build_signature(spec))
+    return tool_func
 
 
-@mcp.tool()
-def cluster_stat(path: str) -> dict:
-    """Show stat info for a path."""
-    return _as_dict(ssh_guard.stat(path))
+def _register_command_tools() -> None:
+    """Load command specs and register MCP tools.
+
+    This keeps tool registration in sync with commands.yml.
+    """
+    config_path = Path(config.COMMANDS_CONFIG_PATH)
+    if not config_path.is_absolute():
+        config_path = Path(__file__).resolve().parent / config_path
+    specs = command_config.load_command_config(config_path)
+    for spec in specs:
+        mcp.tool()(_build_tool(spec))
 
 
-@mcp.tool()
-def cluster_head(path: str, n: int = 200) -> dict:
-    """Show the first N lines of a file."""
-    return _as_dict(ssh_guard.head(path, n))
-
-
-@mcp.tool()
-def cluster_tail(path: str, n: int = 200) -> dict:
-    """Show the last N lines of a file."""
-    return _as_dict(ssh_guard.tail(path, n))
-
-
-@mcp.tool()
-def cluster_cat(path: str) -> dict:
-    """Cat a file with a size guard."""
-    return _as_dict(ssh_guard.cat(path))
-
-
-@mcp.tool()
-def cluster_grep(pattern: str, path: str) -> dict:
-    """Search files or directories for a pattern."""
-    return _as_dict(ssh_guard.grep(pattern, path))
-
-
-@mcp.tool()
-def cluster_sbatch(job_id: str) -> dict:
-    """Submit a whitelisted sbatch script by id."""
-    return _as_dict(ssh_guard.sbatch(job_id))
+_register_command_tools()
 
 
 if __name__ == "__main__":

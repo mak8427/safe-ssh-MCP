@@ -117,6 +117,9 @@ def _register_command_tools() -> None:
 
     This keeps tool registration in sync with commands.yml.
     """
+    validate_runtime_config = getattr(config, "validate_runtime_config", None)
+    if callable(validate_runtime_config):
+        validate_runtime_config()
     config_path = Path(config.COMMANDS_CONFIG_PATH)
     if not config_path.is_absolute():
         config_path = Path(__file__).resolve().parent / config_path

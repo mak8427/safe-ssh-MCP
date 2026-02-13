@@ -71,6 +71,17 @@ commands:
 `cluster_cd` validates a path and returns it without running SSH. It is useful
 for client-side working directory selection.
 
+## Security compatibility flags
+This repository currently defaults to compatibility mode for security rollouts.
+You can enable stricter behavior with environment variables:
+
+- `CLUSTER_TOOLS_ENFORCE_STRICT_HOST_KEY_CHECKING=true`
+- `CLUSTER_TOOLS_SSH_KNOWN_HOSTS_FILE=/absolute/path/to/known_hosts`
+- `CLUSTER_TOOLS_ENFORCE_CANONICAL_PATH_CHECKS=true`
+- `CLUSTER_TOOLS_REJECT_DUPLICATE_YAML_KEYS=true`
+
+In compatibility mode, warnings are emitted and previous behavior is preserved.
+
 ## SSH agent requirement
 This server runs with `BatchMode=yes`. Passphrase-protected keys must be loaded
 via an SSH agent before starting the server (for example, `ssh-agent` +
@@ -81,3 +92,5 @@ via an SSH agent before starting the server (for example, `ssh-agent` +
 - No shell metacharacters.
 - Path allow-list enforced.
 - Output and file size limits are enforced.
+- Strict SSH host verification and canonical path checks are available as
+  opt-in hardening flags.

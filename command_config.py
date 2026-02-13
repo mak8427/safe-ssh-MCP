@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import string
 from dataclasses import dataclass
@@ -75,6 +76,7 @@ class CommandSpec:
 
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+LOGGER = logging.getLogger("cluster_tools")
 
 
 def parse_yaml(text: str) -> Any:
@@ -278,8 +280,26 @@ def _parse_dict(
         else:
             value = _parse_value(rest)
             index += 1
+        if key in mapping:
+            _handle_duplicate_key(key, lines[index - 1].line_no)
         mapping[key] = value
     return mapping, index
+
+
+def _handle_duplicate_key(key: str, line_no: int) -> None:
+    """Handle duplicate mapping keys according to compatibility mode.
+
+    Args:
+        key (str): Duplicate key name.
+        line_no (int): Source line number.
+
+    Raises:
+        CommandConfigError: If strict duplicate-key rejection is enabled.
+    """
+    message = f"duplicate key '{key}' at line {line_no}"
+    if getattr(config, "REJECT_DUPLICATE_YAML_KEYS", False):
+        raise CommandConfigError(message)
+    LOGGER.warning("%s (compat mode: last value wins)", message)
 
 
 def _parse_list(
@@ -609,9 +629,17 @@ def _parse_limits(limits: Any, command_id: str) -> CommandLimits:
         raise CommandConfigError(f"limits for '{command_id}' must be a mapping")
     max_lines = _require_int(limits.get("max_lines"), "max_lines", allow_none=True)
     max_bytes = _require_int(limits.get("max_bytes"), "max_bytes", allow_none=True)
+    if max_lines is not None and max_lines <= 0:
+        raise CommandConfigError(f"max_lines for '{command_id}' must be > 0")
+    if max_bytes is not None and max_bytes <= 0:
+        raise CommandConfigError(f"max_bytes for '{command_id}' must be > 0")
     size_param = limits.get("size_param")
     if size_param is not None and not isinstance(size_param, str):
         raise CommandConfigError(f"size_param for '{command_id}' must be a string")
+    if size_param is not None and max_bytes is None:
+        raise CommandConfigError(
+            f"size_param for '{command_id}' requires max_bytes to be set"
+        )
     return CommandLimits(
         max_lines=max_lines, max_bytes=max_bytes, size_param=size_param
     )

@@ -61,12 +61,16 @@ def test_run_command_renders_tokens() -> None:
     assert "ls" in record["cmd"]
 
 
-def test_run_command_requires_agent() -> None:
+def test_run_command_requires_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Require an SSH agent when batch mode is enabled.
 
     This prevents interactive passphrase prompts in the server.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Fixture for controlled patching.
     """
     os.environ.pop("SSH_AUTH_SOCK", None)
+    monkeypatch.setattr(ssh_guard, "_default_ssh_auth_sock", lambda: None)
 
     def runner(cmd, **_kwargs):
         """Return a successful fake process result.
@@ -85,6 +89,41 @@ def test_run_command_requires_agent() -> None:
     )
     with pytest.raises(ssh_guard.CommandError):
         ssh_guard.run_command(spec, {"value": "hi"}, runner=runner)
+
+
+def test_run_command_uses_default_agent_socket(tmp_path) -> None:
+    """Use fallback SSH_AUTH_SOCK path when env var is missing.
+
+    This supports service-driven environments where the socket is stable.
+
+    Args:
+        tmp_path: Temporary directory fixture for fake runtime socket path.
+    """
+    os.environ.pop("SSH_AUTH_SOCK", None)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    socket_path = runtime_dir / "ssh-agent.socket"
+    socket_path.write_text("", encoding="utf-8")
+    os.environ["XDG_RUNTIME_DIR"] = str(runtime_dir)
+
+    def runner(cmd, **_kwargs):
+        """Return a successful fake process result.
+
+        Args:
+            cmd (list[str]): Command tokens.
+            **_kwargs: Unused keyword arguments.
+        """
+        return FakeCompleted(stdout="ok")
+
+    spec = CommandSpec(
+        id="demo",
+        description="Demo",
+        command=["echo", "{value}"],
+        params=[CommandParam(name="value", param_type="string", required=True)],
+    )
+    result = ssh_guard.run_command(spec, {"value": "hi"}, runner=runner)
+    assert result.stdout == "ok"
+    assert os.environ["SSH_AUTH_SOCK"] == str(socket_path)
 
 
 def test_run_command_applies_value_map() -> None:
@@ -189,3 +228,110 @@ def test_run_command_cd_returns_normalized_path() -> None:
         runner=runner,
     )
     assert result.stdout.strip() == "/user/davide.mattioli/u20330"
+
+
+def test_run_command_adds_strict_ssh_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Add strict host-key options when strict mode is enabled.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Fixture for controlled patching.
+    """
+    os.environ["SSH_AUTH_SOCK"] = "test"
+    record: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        ssh_guard.config, "ENFORCE_STRICT_HOST_KEY_CHECKING", True, raising=False
+    )
+    monkeypatch.setattr(
+        ssh_guard.config,
+        "SSH_KNOWN_HOSTS_FILE",
+        "/home/mak/.ssh/known_hosts",
+        raising=False,
+    )
+
+    def runner(cmd, **_kwargs):
+        """Capture command tokens.
+
+        Args:
+            cmd (list[str]): Command tokens.
+            **_kwargs: Unused keyword arguments.
+        """
+        record["cmd"] = cmd
+        return FakeCompleted(stdout="ok")
+
+    spec = CommandSpec(
+        id="demo",
+        description="Demo",
+        command=["echo", "{value}"],
+        params=[CommandParam(name="value", param_type="string", required=True)],
+    )
+    result = ssh_guard.run_command(spec, {"value": "hi"}, runner=runner)
+    assert result.stdout == "ok"
+    joined = " ".join(record["cmd"])
+    assert "StrictHostKeyChecking=yes" in joined
+    assert "UserKnownHostsFile=/home/mak/.ssh/known_hosts" in joined
+    assert "IdentitiesOnly=yes" in joined
+
+
+def test_run_command_rejects_canonical_path_escape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject a path that resolves outside the allow-list in strict mode.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Fixture for controlled patching.
+    """
+    os.environ["SSH_AUTH_SOCK"] = "test"
+    monkeypatch.setattr(
+        ssh_guard.config, "ENFORCE_CANONICAL_PATH_CHECKS", True, raising=False
+    )
+
+    def runner(cmd, **_kwargs):
+        """Return canonical path escape output for readlink.
+
+        Args:
+            cmd (list[str]): Command tokens.
+            **_kwargs: Unused keyword arguments.
+        """
+        if "readlink" in cmd:
+            return FakeCompleted(stdout="/etc/passwd\n")
+        return FakeCompleted(stdout="ok")
+
+    spec = CommandSpec(
+        id="cluster_ls",
+        description="List",
+        command=["ls", "-la", "--", "{path}"],
+        params=[
+            CommandParam(name="path", param_type="path", required=True, allowed="all")
+        ],
+    )
+    with pytest.raises(ssh_guard.CommandError):
+        ssh_guard.run_command(
+            spec,
+            {"path": "/user/davide.mattioli/u20330/symlink"},
+            runner=runner,
+        )
+
+
+def test_run_command_requires_known_hosts_for_strict_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Require known_hosts path when strict host checking is enabled.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Fixture for controlled patching.
+    """
+    os.environ["SSH_AUTH_SOCK"] = "test"
+    monkeypatch.setattr(
+        ssh_guard.config, "ENFORCE_STRICT_HOST_KEY_CHECKING", True, raising=False
+    )
+    monkeypatch.setattr(ssh_guard.config, "SSH_KNOWN_HOSTS_FILE", "", raising=False)
+    spec = CommandSpec(
+        id="demo",
+        description="Demo",
+        command=["echo", "{value}"],
+        params=[CommandParam(name="value", param_type="string", required=True)],
+    )
+    with pytest.raises((ValueError, ssh_guard.CommandError)):
+        ssh_guard.run_command(spec, {"value": "hi"}, runner=lambda *_a, **_k: None)

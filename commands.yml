@@ -117,15 +117,12 @@ commands:
       - "{job_id}"
     params:
       job_id:
-        type: path
+        type: string
         required: true
-        allowed: all
         allowed_values:
-          - run_main
-          - run_split_eval
+          - silver_set
         value_map:
-          run_main: /user/davide.mattioli/u20330/dinov3-LWF-Segmentation-erosion/jobs/run_main.sh
-          run_split_eval: /user/davide.mattioli/u20330/dinov3-LWF-Segmentation-erosion/jobs/run_split_eval.sh
+          silver_set: /user/davide.mattioli/u20330/dinov3-LWF-Segmentation-erosion/silver_set.sh
   - id: cluster_cd
     description: Validate and return a working directory path.
     command:

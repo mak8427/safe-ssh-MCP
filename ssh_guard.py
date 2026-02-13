@@ -56,6 +56,38 @@ def _setup_logging() -> logging.Logger:
 
 
 LOGGER = _setup_logging()
+_WARNED_KEYS: set[str] = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    """Log a warning only once for a given key.
+
+    Args:
+        key (str): Stable warning key.
+        message (str): Warning message.
+    """
+    if key in _WARNED_KEYS:
+        return
+    _WARNED_KEYS.add(key)
+    LOGGER.warning(message)
+
+
+def _default_ssh_auth_sock() -> str | None:
+    """Return a best-effort default SSH agent socket path.
+
+    Returns:
+        str | None: Existing socket path if found, else None.
+    """
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    candidates: list[str] = []
+    if runtime_dir:
+        candidates.append(posixpath.join(runtime_dir, "ssh-agent.socket"))
+    candidates.append(f"/run/user/{os.getuid()}/ssh-agent.socket")
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return None
 
 
 def _normalize_remote_path(path: str, allowed_prefixes: list[str] | None = None) -> str:
@@ -115,6 +147,10 @@ def _require_ssh_agent() -> None:
         return
     if os.environ.get("SSH_AUTH_SOCK"):
         return
+    default_sock = _default_ssh_auth_sock()
+    if default_sock:
+        os.environ["SSH_AUTH_SOCK"] = default_sock
+        return
     raise CommandError("SSH agent is required when SSH_BATCH_MODE is enabled")
 
 
@@ -131,6 +167,9 @@ def _run_ssh(
     Returns:
         CommandResult: Captured stdout, stderr, and exit code.
     """
+    validate_runtime_config = getattr(config, "validate_runtime_config", None)
+    if callable(validate_runtime_config):
+        validate_runtime_config()
     _require_ssh_agent()
     for i, item in enumerate(cmd):
         _validate_token(item, f"arg[{i}]")
@@ -141,6 +180,23 @@ def _run_ssh(
     connect_timeout = getattr(config, "SSH_CONNECT_TIMEOUT", None)
     if connect_timeout:
         ssh_cmd.extend(["-o", f"ConnectTimeout={int(connect_timeout)}"])
+    if getattr(config, "ENFORCE_STRICT_HOST_KEY_CHECKING", False):
+        known_hosts = getattr(config, "SSH_KNOWN_HOSTS_FILE", "")
+        if not known_hosts:
+            raise CommandError("strict host key checking requires SSH_KNOWN_HOSTS_FILE")
+        ssh_cmd.extend(["-o", "StrictHostKeyChecking=yes"])
+        ssh_cmd.extend(["-o", f"UserKnownHostsFile={known_hosts}"])
+        ssh_cmd.extend(["-o", "IdentitiesOnly=yes"])
+    else:
+        if not getattr(config, "ALLOW_INSECURE_SSH", True):
+            raise CommandError(
+                "insecure SSH mode is disabled; enable strict host key checking"
+            )
+        _warn_once(
+            "insecure_ssh_mode",
+            "strict host key checking disabled (compat mode); set "
+            "CLUSTER_TOOLS_ENFORCE_STRICT_HOST_KEY_CHECKING=true to harden",
+        )
     ssh_cmd.extend(
         [
             "-i",
@@ -149,7 +205,7 @@ def _run_ssh(
             *cmd,
         ]
     )
-    LOGGER.info("run: %s", " ".join(cmd))
+    LOGGER.info("run command=%s argc=%s", cmd[0], max(len(cmd) - 1, 0))
     completed = runner(
         ssh_cmd,
         capture_output=True,
@@ -247,7 +303,7 @@ def run_command(
             raw_value = None
         if raw_value is None:
             continue
-        values[param.name] = _resolve_param_value(param, raw_value)
+        values[param.name] = _resolve_param_value(param, raw_value, runner=runner)
 
     placeholders = _collect_placeholders(spec.command)
     missing = sorted(
@@ -297,12 +353,17 @@ def _cd_placeholder_param(
     return param_name
 
 
-def _resolve_param_value(param: CommandParam, raw_value: Any) -> Any:
+def _resolve_param_value(
+    param: CommandParam,
+    raw_value: Any,
+    runner: Callable[..., Any] = subprocess.run,
+) -> Any:
     """Resolve and validate a parameter value.
 
     Args:
         param (CommandParam): Parameter specification.
         raw_value (Any): Raw input value.
+        runner (Callable[..., Any]): Runner override for subprocess execution.
 
     Returns:
         Any: Normalized and validated value.
@@ -327,7 +388,7 @@ def _resolve_param_value(param: CommandParam, raw_value: Any) -> Any:
     if param.param_type == "string":
         return _coerce_string(param, mapped_value)
     if param.param_type == "path":
-        return _coerce_path(param, mapped_value)
+        return _coerce_path(param, mapped_value, runner=runner)
     raise CommandError(f"unsupported param type: {param.param_type}")
 
 
@@ -378,12 +439,17 @@ def _coerce_string(param: CommandParam, value: Any) -> str:
     return value
 
 
-def _coerce_path(param: CommandParam, value: Any) -> str:
+def _coerce_path(
+    param: CommandParam,
+    value: Any,
+    runner: Callable[..., Any] = subprocess.run,
+) -> str:
     """Coerce and validate a path parameter.
 
     Args:
         param (CommandParam): Parameter specification.
         value (Any): Raw path value.
+        runner (Callable[..., Any]): Runner override for subprocess execution.
 
     Returns:
         str: Normalized and validated path.
@@ -391,7 +457,42 @@ def _coerce_path(param: CommandParam, value: Any) -> str:
     if not isinstance(value, str):
         raise CommandError(f"param '{param.name}' must be a string")
     allowed_prefixes = _resolve_allowed_prefixes(param)
-    return _normalize_remote_path(value, allowed_prefixes)
+    normalized = _normalize_remote_path(value, allowed_prefixes)
+    if not getattr(config, "ENFORCE_CANONICAL_PATH_CHECKS", False):
+        _warn_once(
+            "lexical_path_checks",
+            "canonical path checks disabled (compat mode); set "
+            "CLUSTER_TOOLS_ENFORCE_CANONICAL_PATH_CHECKS=true to harden",
+        )
+        return normalized
+    canonical = _resolve_canonical_remote_path(normalized, runner=runner)
+    return _normalize_remote_path(canonical, allowed_prefixes)
+
+
+def _resolve_canonical_remote_path(
+    path: str,
+    runner: Callable[..., Any] = subprocess.run,
+) -> str:
+    """Resolve a remote path to its canonical absolute form.
+
+    Args:
+        path (str): Normalized remote path.
+        runner (Callable[..., Any]): Runner override for subprocess execution.
+
+    Returns:
+        str: Canonical absolute path from the remote host.
+
+    Raises:
+        CommandError: If canonical path resolution fails.
+    """
+    result = _run_ssh(["readlink", "-f", "--", path], runner=runner)
+    if result.exit_code != 0:
+        err = result.stderr.strip() or "readlink failed"
+        raise CommandError(f"canonical path resolution failed: {err}")
+    canonical = result.stdout.strip()
+    if not canonical:
+        raise CommandError("canonical path resolution returned an empty path")
+    return canonical
 
 
 def _resolve_allowed_prefixes(param: CommandParam) -> list[str]:
@@ -732,7 +833,7 @@ def sbatch(
     Examples:
         >>> import os
         >>> os.environ["SSH_AUTH_SOCK"] = "test"
-        >>> sbatch("run_main", runner=_demo_runner).stdout
+        >>> sbatch("silver_set", runner=_demo_runner).stdout
         'ok'
     """
     _validate_token(job_id, "job_id")

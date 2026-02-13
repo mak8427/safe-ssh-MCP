@@ -17,9 +17,12 @@ commands for the cluster.
 - Declarative command definitions in YAML.
 - Deterministic parsing with clear errors.
 - Non-interactive SSH with agent-based auth.
+- Compatibility-first hardening flags for gradual security rollout.
 
 ## Workflow
 1. Update `commands.yml` to add or change tools.
 2. `command_config.py` parses + validates the config on startup.
 3. `server.py` registers each command as an MCP tool dynamically.
 4. `ssh_guard.py` enforces path and argument restrictions before SSH.
+5. Optional strict mode enforces host-key verification, canonical path checks,
+   and duplicate YAML key rejection.
